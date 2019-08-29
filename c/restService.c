@@ -38,6 +38,7 @@
 #include "logging.h"
 #include "zssLogging.h"
 #include "restService.h"
+#include "zss.h"
 #pragma linkage (EXSMFI,OS)
 
 #ifdef __ZOWE_OS_ZOS
@@ -48,7 +49,7 @@ char productVersion[40];
 typedef int EXSMFI();
 EXSMFI *smf_func;
 
-int installServerStatusService(HttpServer *server, JsonObject *serverSettings, char* productVer)
+int installServerStatusService(HttpServer *server)
 {
   HttpService *httpService = makeGeneratedService("REST_Service", "/server/agent/**");
   httpService->authType = SERVICE_AUTH_NATIVE_WITH_SESSION_TOKEN;
@@ -56,8 +57,8 @@ int installServerStatusService(HttpServer *server, JsonObject *serverSettings, c
   httpService->runInSubtask = TRUE;
   httpService->doImpersonation = TRUE;
   registerHttpService(server, httpService);
-  serverConfig = serverSettings;
-  memcpy(productVersion, productVer, 40);
+  serverConfig = getServerConfig();
+  memcpy(productVersion, getServerProductVersion(), 40);
   return 0;
 }
 
@@ -206,7 +207,7 @@ static int serveStatus(HttpService *service, HttpResponse *response) {
   if(!rbacParm){
      respondWithError(response, HTTP_STATUS_UNAUTHORIZED, "Unauthorized - RBAC is disabled.  Enable in zluxserver.json");
   } else {
-    if (!strcmp(request->method, methodGET)) {
+    if (!strcmp(request->method, methodGET)){
       char *l1 = stringListPrint(request->parsedFile, 2, 1, "/", 0);
       if(!strcmp(l1, "")){
         respondWithServerRoutes(response);
@@ -221,17 +222,44 @@ static int serveStatus(HttpService *service, HttpResponse *response) {
            respondWithError(response, HTTP_STATUS_NOT_FOUND, "Log not found");
         }
       }
-      else if (!strcmp(l1, "logLevels")) {
+      else if (!strcmp(l1, "logLevels")){
         respondWithLogLevels(response);
       }
-      else if (!strcmp(l1, "environment")) {
+      else if (!strcmp(l1, "environment")){
         respondWithServerEnvironment(response);
       }
       else {
         respondWithJsonError(response, "Invalid path", 400, "Bad Request");
       }
-    }
-    else{
+    }else if (!strcmp(request->method, methodPOST)){
+      char *l1 = stringListPrint(request->parsedFile, 2, 1, "/", 0);
+      char *l3 = stringListPrint(request->parsedFile, 3, 1, "/", 0);
+      char *nameOrPattern = stringListPrint(request->parsedFile, 4, 1, "/", 0);
+      char *l5 = stringListPrint(request->parsedFile, 5, 1, "/", 0);
+      char *newLevel = stringListPrint(request->parsedFile, 6, 1, "/", 0);
+      if (!strcmp(l1, "logLevels") && !strcmp(l5, "level")){
+        if(!strcmp(l3, "name") || !strcmp(l3, "pattern")){
+          JsonObject *logLevels = jsonObjectGetObject(serverConfig, "logLevels");
+          if(logLevels){
+            TraceDefinition *traceDef = traceDefs;
+            while(traceDef->name != 0){
+              if(!strncmp(traceDef->name, nameOrPattern, strlen(traceDef->name))){
+                if(atoi(newLevel >=0)){
+                  traceDef->function(atoi(newLevel));
+                }
+                break;
+              }
+              ++traceDef;
+            }
+          }
+          respondWithLogLevels(response);
+        } else {
+          respondWithJsonError(response, "Invalid path", 400, "Bad Request");
+        }
+      } else {
+        respondWithJsonError(response, "Invalid path", 400, "Bad Request");
+      }
+    }else{
       jsonPrinter *out = respondWithJsonPrinter(response);
 
       setContentType(response, "text/json");
