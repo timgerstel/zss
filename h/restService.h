@@ -13,7 +13,7 @@
 #ifndef __REST_SERVICE_H__
 #define __REST_SERVICE_H__
 
-int installServerStatusService(HttpServer *server, JsonObject* serverSettings, char* productVer);
+int installServerStatusService(HttpServer *server);
 
 #endif /* __REST_SERVICE_H__ */
 

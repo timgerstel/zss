@@ -40,17 +40,13 @@
 #ifdef __ZOWE_OS_ZOS
 #include "zos.h"
 #endif
-#include "bpxnet.h"
 #include "collections.h"
-#include "unixfile.h"
 #include "socketmgmt.h"
 #include "le.h"
-#include "logging.h"
 #include "scheduling.h"
 #include "json.h"
 
 #include "xml.h"
-#include "httpserver.h"
 #include "httpfileservice.h"
 #include "dataservice.h"
 #ifdef __ZOWE_OS_ZOS
@@ -65,12 +61,12 @@
 #include "zis/client.h"
 #endif
 
-#include "zssLogging.h"
 #include "serviceUtils.h"
 #include "unixFileService.h"
 #include "omvsService.h"
 #include "datasetService.h"
 #include "restService.h"
+#include "zss.h"
 
 #define PRODUCT "ZLUX"
 #ifndef PRODUCT_MAJOR_VERSION
@@ -308,7 +304,7 @@ static void loadWebServerConfig(HttpServer *server, JsonObject *mvdSettings){
 
 #define DIR_BUFFER_SIZE 4096
 
-static int setMVDTrace(int toWhat) {
+int setMVDTrace(int toWhat) {
   int was = traceLevel;
   if (isLogLevelValid(toWhat)) {
     traceLevel = toWhat;
@@ -318,32 +314,6 @@ static int setMVDTrace(int toWhat) {
   }
   return was;
 }
-
-typedef int (*TraceSetFunction)(int toWhat);
-
-typedef struct TraceDefinition_tag {
-  const char* name;
-  TraceSetFunction function;
-} TraceDefinition;
-
-static
-TraceDefinition traceDefs[] = {
-  {"_zss.traceLevel", setMVDTrace},
-  {"_zss.fileTrace", setFileTrace},
-  {"_zss.socketTrace", setSocketTrace},
-  {"_zss.httpParseTrace", setHttpParseTrace},
-  {"_zss.httpDispatchTrace", setHttpDispatchTrace},
-  {"_zss.httpHeadersTrace", setHttpHeadersTrace},
-  {"_zss.httpSocketTrace", setHttpSocketTrace},
-  {"_zss.httpCloseConversationTrace", setHttpCloseConversationTrace},
-  {"_zss.httpAuthTrace", setHttpAuthTrace},
-#ifdef __ZOWE_OS_LINUX
-  /* TODO: move this somewhere else... no impact for z/OS Zowe currently. */
-  {"DefaultCCSID", setFileInfoCCSID}, /* not a trace setting */
-#endif
-
-  {0,0}
-};
 
 static JsonObject *readServerSettings(ShortLivedHeap *slh, const char *filename) {
 
@@ -820,10 +790,13 @@ static int validateFilePermissions(const char *filePath) {
   }
 }
 
-static JsonObject* getServerConfig(){
+JsonObject* getServerConfig(){
   return MVD_SETTINGS;
 }
-  
+
+char* getServerProductVersion(){
+  return productVersion;
+}
 
 #endif /* ZSS_IGNORE_PERMISSION_PROBLEMS */
 
@@ -916,7 +889,7 @@ int main(int argc, char **argv){
       installAuthCheckService(server);
       installSecurityManagementServices(server);
       installOMVSService(server);
-      installServerStatusService(server, MVD_SETTINGS, productVersion);
+      installServerStatusService(server);
 #endif
       installLoginService(server);
       installLogoutService(server);
