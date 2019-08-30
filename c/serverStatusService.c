@@ -40,6 +40,8 @@
 
 #ifdef __ZOWE_OS_ZOS
 static int serveStatus(HttpService *service, HttpResponse *response);
+static JsonObject* serverConfig = NULL;
+char productVersion[40];
 extern char **environ;
 
 typedef int EXSMFI(int *reqType, int *recType, int *subType,
@@ -127,7 +129,14 @@ void respondWithLogLevels(HttpResponse *response, ServerAgentContext *context){
 void respondWithServerEnvironment(HttpResponse *response, ServerAgentContext *context){
   /*Information about parameters for smf_unc: https://www.ibm.com/support/knowledgecenter/SSLTBW_2.1.0/com.ibm.zos.v2r1.erbb700/smfp.htm#smfp*/
   struct utsname unameRet;
-  char hostnameBuffer[256];
+  uname(&unameRet);
+  char pid[64];
+  char ppid[64];
+  char dp[64];
+  char cpu_u[64];
+  char mvs_u[64];
+  char ziip_u[64];
+  char zaap_u[64];
   char* buffer;
   time_t curr_time;
   char* c_time_str;
@@ -181,12 +190,13 @@ void respondWithServerEnvironment(HttpResponse *response, ServerAgentContext *co
   jsonAddString(out, "hardwareIdentifier", unameRet.machine);
   jsonAddString(out, "hostname", unameRet.nodename);
   jsonStartObject(out, "userEnvironment");
+  char *env_var = strdup(*environ);
+  int i = 1;
   for (; env_var; i++) {
-    int j = 0;
     char *var_name = strtok(env_var, "=");
     char *var_value = strtok(NULL, "=");
     jsonAddString(out, var_name, var_value);
-    env_var = *(environ+i);
+    env_var = strdup(*(environ+i));
   }
   jsonEndObject(out);
   jsonAddString(out, "demandPagingRate", dp); 
@@ -197,6 +207,7 @@ void respondWithServerEnvironment(HttpResponse *response, ServerAgentContext *co
   jsonAddString(out, "PID", pid);
   jsonAddString(out, "PPID", ppid);
   jsonEnd(out);
+  //safeFree(env_var, sizeof(*environ)+1);
   finishResponse(response);
 }
 
