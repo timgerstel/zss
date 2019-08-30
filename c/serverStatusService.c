@@ -35,7 +35,8 @@
 
 #include "logging.h"
 #include "zssLogging.h"
-#include "serverStatusService.h"
+#include "restService.h"
+#pragma linkage (EXSMFI,OS)
 
 #ifdef __ZOWE_OS_ZOS
 static int serveStatus(HttpService *service, HttpResponse *response);
@@ -59,6 +60,8 @@ int installServerStatusService(HttpServer *server, JsonObject *serverSettings, c
   memcpy(context->productVersion, productVer, sizeof(context->productVersion) - 1);
   httpService->userPointer = context;
   registerHttpService(server, httpService);
+  serverConfig = serverSettings;
+  memcpy(productVersion, productVer, 40);
   return 0;
 }
 
@@ -170,44 +173,29 @@ void respondWithServerEnvironment(HttpResponse *response, ServerAgentContext *co
   setDefaultJSONRESTHeaders(response);
   writeHeader(response);
   jsonStart(out);
-  jsonAddString(out, "timestamp", c_time_str);
-  if(getenv("ZSS_LOG_FILE") != NULL){
-    jsonAddString(out, "logDirectory", getenv("ZSS_LOG_FILE"));
-  } else {
-    jsonAddString(out, "logDirectory", "ZSS_LOG_FILE not defined in environment variables");
-  }
-  jsonAddString(out, "agentName", "zss");
-  jsonAddString(out, "agentVersion", context->productVersion);
+  jsonAddString(out, "log directory", getenv("ZSS_LOG_FILE"));
+  jsonAddString(out, "agent name", "zss");
+  jsonAddString(out, "agent version", productVersion);
   jsonAddString(out, "arch", unameRet.sysname);
-  jsonAddString(out, "osRelease", unameRet.release);
-  jsonAddString(out, "osVersion", unameRet.version);
-  jsonAddString(out, "hardwareIdentifier", unameRet.machine);
-  jsonAddString(out, "hostname", hostnameBuffer);
-  jsonAddString(out, "nodename", unameRet.nodename);
-  jsonStartObject(out, "userEnvironment");
-  char *env_var = *environ;
-  for (int i = 1; env_var; i++) {
-    char *equalSign = strchr(env_var, '=');
-    if(equalSign == NULL){
-      break;
-    }
-    int nameLen = strlen(env_var) - strlen(equalSign);
-    int nameBufferLen = nameLen + 1;
-    char *name = safeMalloc(nameBufferLen, "env_var name");
-    memcpy(name, env_var, nameLen);
-    name[nameLen] = '\0';
-    jsonAddString(out, name, equalSign+1);
-    safeFree(name, nameBufferLen);
+  jsonAddString(out, "OS release", unameRet.release);
+  jsonAddString(out, "hardware identifier", unameRet.machine);
+  jsonAddString(out, "hostname", unameRet.nodename);
+  jsonStartObject(out, "user environment");
+  for (; env_var; i++) {
+    int j = 0;
+    char *var_name = strtok(env_var, "=");
+    char *var_value = strtok(NULL, "=");
+    jsonAddString(out, var_name, var_value);
     env_var = *(environ+i);
   }
   jsonEndObject(out);
-  jsonAddInt(out, "demandPagingRate", demandPaging);
-  jsonAddInt(out, "stdCP_CPU_Util", cpuUtil);
-  jsonAddInt(out, "stdCP_MVS_SRM_CPU_Util", mvsSrm);
-  jsonAddInt(out, "ZAAP_CPU_Util", zaapUtil);
-  jsonAddInt(out, "ZIIP_CPU_Util", ziipUtil);
-  jsonAddInt(out, "PID", getpid());
-  jsonAddInt(out, "PPID", getppid());
+  jsonAddString(out, "Demand Paging Rate", dp); 
+  jsonAddString(out, "Standard CP CPU Utilization", cpu_u);
+  jsonAddString(out, "Standard CP MVS/SRM CPU Utilization", mvs_u);
+  jsonAddString(out, "ZAAP CPU Utilization", zaap_u);
+  jsonAddString(out, "ZIIP CPU Utilization", ziip_u);
+  jsonAddString(out, "PID", pid);
+  jsonAddString(out, "PPID", ppid);
   jsonEnd(out);
   finishResponse(response);
 }
@@ -220,7 +208,7 @@ static int serveStatus(HttpService *service, HttpResponse *response) {
   if(!rbacParm){
      respondWithError(response, HTTP_STATUS_UNAUTHORIZED, "Unauthorized - RBAC is disabled.  Enable in zluxserver.json");
   } else {
-    if(!strcmp(request->method, methodGET)){
+    if (!strcmp(request->method, methodGET)) {
       char *l1 = stringListPrint(request->parsedFile, 2, 1, "/", 0);
       if(!strcmp(l1, "")){
         respondWithServerRoutes(response);
@@ -233,14 +221,18 @@ static int serveStatus(HttpService *service, HttpResponse *response) {
         } else {
            respondWithError(response, HTTP_STATUS_NOT_FOUND, "Log not found");
         }
-      }else if (!strcmp(l1, "logLevels")){
-        respondWithLogLevels(response, context);
-      }else if (!strcmp(l1, "environment")){
-        respondWithServerEnvironment(response, context);
-      } else {
+      }
+      else if (!strcmp(l1, "logLevels")) {
+        respondWithLogLevels(response);
+      }
+      else if (!strcmp(l1, "environment")) {
+        respondWithServerEnvironment(response);
+      }
+      else {
         respondWithJsonError(response, "Invalid path", 400, "Bad Request");
       }
-    } else {
+    }
+    else{
       jsonPrinter *out = respondWithJsonPrinter(response);
       setContentType(response, "text/json");
       setResponseStatus(response, 405, "Method Not Allowed");
