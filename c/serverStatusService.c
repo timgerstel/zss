@@ -207,7 +207,7 @@ void respondWithServerEnvironment(HttpResponse *response, ServerAgentContext *co
   jsonAddString(out, "PID", pid);
   jsonAddString(out, "PPID", ppid);
   jsonEnd(out);
-  //safeFree(env_var, sizeof(*environ)+1);
+  safeFree(env_var, sizeof(*environ)+1);
   finishResponse(response);
 }
 
