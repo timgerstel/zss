@@ -35,18 +35,14 @@
 
 #include "logging.h"
 #include "zssLogging.h"
-#include "restService.h"
+#include "serverStatusService.h"
 #pragma linkage (EXSMFI,OS)
 
 #ifdef __ZOWE_OS_ZOS
 static int serveStatus(HttpService *service, HttpResponse *response);
-static JsonObject* serverConfig = NULL;
-char productVersion[40];
 extern char **environ;
 
-typedef int EXSMFI(int *reqType, int *recType, int *subType,
-                   char* buffer, int *bufferLen, int *cpuUtil,
-                   int *dpRate, int *options, int *mvs, int *zaap, int *ziip);
+typedef int EXSMFI();
 EXSMFI *smfFunc;
 
 int installServerStatusService(HttpServer *server, JsonObject *serverSettings, char* productVer)
@@ -58,12 +54,9 @@ int installServerStatusService(HttpServer *server, JsonObject *serverSettings, c
   httpService->doImpersonation = TRUE;
   ServerAgentContext *context = (ServerAgentContext*)safeMalloc(sizeof(ServerAgentContext), "ServerAgentContext");
   context->serverConfig = serverSettings;
-  context->productVersion[sizeof(context->productVersion) - 1] = '\0';
-  memcpy(context->productVersion, productVer, sizeof(context->productVersion) - 1);
+  memcpy(context->productVersion, productVer, strlen(productVer));
   httpService->userPointer = context;
   registerHttpService(server, httpService);
-  serverConfig = serverSettings;
-  memcpy(productVersion, productVer, 40);
   return 0;
 }
 
@@ -128,6 +121,7 @@ void respondWithLogLevels(HttpResponse *response, ServerAgentContext *context){
 
 void respondWithServerEnvironment(HttpResponse *response, ServerAgentContext *context){
   /*Information about parameters for smf_unc: https://www.ibm.com/support/knowledgecenter/SSLTBW_2.1.0/com.ibm.zos.v2r1.erbb700/smfp.htm#smfp*/
+  jsonPrinter *out = respondWithJsonPrinter(response);
   struct utsname unameRet;
   uname(&unameRet);
   char pid[64];
@@ -184,7 +178,7 @@ void respondWithServerEnvironment(HttpResponse *response, ServerAgentContext *co
   jsonStart(out);
   jsonAddString(out, "logDirectory", getenv("ZSS_LOG_FILE"));
   jsonAddString(out, "agentName", "zss");
-  jsonAddString(out, "agentVersion", productVersion);
+  jsonAddString(out, "agentVersion", context->productVersion);
   jsonAddString(out, "arch", unameRet.sysname);
   jsonAddString(out, "osRelease", unameRet.release);
   jsonAddString(out, "hardwareIdentifier", unameRet.machine);
@@ -223,21 +217,22 @@ static int serveStatus(HttpService *service, HttpResponse *response) {
       char *l1 = stringListPrint(request->parsedFile, 2, 1, "/", 0);
       if(!strcmp(l1, "")){
         respondWithServerRoutes(response);
-      }else if (!strcmp(l1, "config")){
+      }
+      else if (!strcmp(l1, "config")){
         respondWithServerConfig(response, context->serverConfig);
-      }else if (!strcmp(l1, "log")) {
-        char* logDir = getenv("ZSS_LOG_FILE");
-        if(logDir == NULL || strcmp(logDir, "")){
-          respondWithUnixFile2(NULL, response, logDir, 0, 0, false);
+      }
+      else if (!strcmp(l1, "log")) {
+        if(strcmp(getenv("ZSS_LOG_FILE"), "")){
+          respondWithUnixFile2(NULL, response, getenv("ZSS_LOG_FILE"), 0, 0, false);
         } else {
            respondWithError(response, HTTP_STATUS_NOT_FOUND, "Log not found");
         }
       }
       else if (!strcmp(l1, "logLevels")) {
-        respondWithLogLevels(response);
+        respondWithLogLevels(response, context);
       }
       else if (!strcmp(l1, "environment")) {
-        respondWithServerEnvironment(response);
+        respondWithServerEnvironment(response, context);
       }
       else {
         respondWithJsonError(response, "Invalid path", 400, "Bad Request");
