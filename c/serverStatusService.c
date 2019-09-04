@@ -156,6 +156,12 @@ void respondWithServerEnvironment(HttpResponse *response, ServerAgentContext *co
                &zaapUtil,
                &ziipUtil);
   safeFree(buffer, bufferlen);
+  curr_time = time(NULL);
+  c_time_str = ctime(&curr_time);
+  if(c_time_str[strlen(c_time_str) - 1] == '\n'){
+    c_time_str[strlen(c_time_str) - 1] = '\0';
+  }
+  printf("strlen time: %d\n", strlen(c_time_str));
   if(rc > 0){
     respondWithError(response, HTTP_STATUS_BAD_REQUEST, "Unable to fetch from RMF data interface service");
   }
@@ -164,6 +170,7 @@ void respondWithServerEnvironment(HttpResponse *response, ServerAgentContext *co
   setDefaultJSONRESTHeaders(response);
   writeHeader(response);
   jsonStart(out);
+  jsonAddString(out, "timestamp", c_time_str);
   if(getenv("ZSS_LOG_FILE") != NULL){
     jsonAddString(out, "logDirectory", getenv("ZSS_LOG_FILE"));
   } else {
