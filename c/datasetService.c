@@ -28,11 +28,13 @@
 #endif
 
 #include "zowetypes.h"
+#include "isgenq.h"
 #include "alloc.h"
 #include "bpxnet.h"
 #include "zos.h"
 #include "utils.h"
 #include "socketmgmt.h"
+#include "dynalloc.h"
 
 #include "httpserver.h"
 #include "dataservice.h"
@@ -43,7 +45,17 @@
 
 #include "datasetService.h"
 
+
 #ifdef __ZOWE_OS_ZOS
+
+#define IS_DAMEMBER_EMPTY($member) \
+  (!memcmp(&($member), &(DynallocMemberName){"        "}, sizeof($member)))
+
+ENQToken tempLock;
+DynallocDatasetName daDsn = {0};
+DynallocMemberName daMember = {0};
+DynallocDDName daDDname = {.name = "????????"};
+
 static int serveDatasetMetadata(HttpService *service, HttpResponse *response) {
   zowelog(NULL, LOG_COMP_ID_MVD_SERVER, ZOWE_LOG_DEBUG2, "begin %s\n", __FUNCTION__);
   HttpRequest *request = response->request;
@@ -182,55 +194,86 @@ static int serveVSAMDatasetContents(HttpService *service, HttpResponse *response
   return 0;
 }
 
-static int serveDatasetWritingService(HttpService *service, HttpResponse *response) {
+static int serveDatasetLockingService(HttpService *service, HttpResponse *response) {
   HttpRequest *request = response->request;
-  if (!strcmp(request->method, methodPOST)) {
-    char *l1 = stringListPrint(request->parsedFile, 2, 1, "/", 0);
-    if (!strcmp(l1, "")) {
-      int contentLength = request->contentLength;
-      if(contentLength < 0){
-        respondWithJsonError(response, "Malformed request, missing 'contentLength' header.", 400, "Bad Request");
-        return -1;
-      } else {
-        #define JSON_ERROR_BUFFER_SIZE 1024
-        char* inPtr = request->contentBody;
-        char *nativeBody = copyStringToNative(request->slh, inPtr, strlen(inPtr));
-        int inLen = nativeBody == NULL ? 0 : strlen(nativeBody);
-        char errBuf[JSON_ERROR_BUFFER_SIZE];
-        Json *body = jsonParseUnterminatedString(request->slh, nativeBody, inLen, errBuf, JSON_ERROR_BUFFER_SIZE);
-        #undef JSON_ERROR_BUFFER_SIZE
-        if(body != NULL){
-          JsonObject *reqObj = jsonAsObject(body);
-          Json *datasetName = jsonObjectGetPropertyValue(reqObj,"datasetName");
-          Json *datasetContent = jsonObjectGetPropertyValue(reqObj,"content");
-          if(datasetName == NULL || datasetName != NULL && !jsonIsString(datasetName)){
-            respondWithJsonError(response, "Malformed request body, attribute 'datasetName' is null or not a string.", 400, "Bad Request");
-            return -1;
-          }
-          if(datasetContent == NULL || datasetContent != NULL && !jsonIsString(datasetContent)){
-            respondWithJsonError(response, "Malformed request body, attribute 'datasetContent' is null or not a string.", 400, "Bad Request");
-            return -1;
-          }
-          //proceed writing
-        } else {
-          respondWithJsonError(response, "Malformed request, missing request body.", 400, "Bad Request");
-          return -1;
-        }
-      }
-    }else {
-      respondWithJsonError(response, "Invalid path", 400, "Bad Request");
+  char *l1 = stringListPrint(request->parsedFile, 1, 1, "/", 0);
+  char *percentDecoded = cleanURLParamValue(response->slh, l1);
+  char *absPathTemp = stringConcatenate(response->slh, "//'", percentDecoded);
+  char *absDsPath = stringConcatenate(response->slh, absPathTemp, "'");
+  char *username = request->username;
+  printf("percent decoded datasetName: %s\n", percentDecoded);
+  if(!strcmp(percentDecoded, "")) {
+    respondWithJsonError(response, "Malformed request URL, no dataset name provided", 400, "Bad Request");
+    return -1;
+  } else if(!isDatasetPathValid(absDsPath)){
+    respondWithError(response,HTTP_STATUS_BAD_REQUEST,"Invalid dataset path");
+    return -1;
+  }
+  DatasetName dsnName;
+  DatasetMemberName memName;
+  extractDatasetAndMemberName(absDsPath, &dsnName, &memName);
+  nullTerminate(dsnName.value, sizeof(dsnName.value));
+  nullTerminate(memName.value, sizeof(memName.value));
+  printf("Extracted dsName: %s\nExtracted member: %s\n", dsnName.value, memName.value);
+  int daRC = RC_DYNALLOC_OK, daSysRC = 0, daSysRSN = 0;
+  memset(daDsn.name, ' ', sizeof(daDsn.name));
+  memset(daMember.name, ' ', sizeof(daMember.name));
+  memcpy(daDsn.name, percentDecoded, strlen(percentDecoded));
+  memcpy(daMember.name, "", 0);
+  if(!strcmp(request->method, methodPOST)) {
+     daRC = dynallocAllocDataset(
+      &daDsn,
+      IS_DAMEMBER_EMPTY(daMember) ? NULL : &daMember,
+      &daDDname,
+      DYNALLOC_DISP_SHR,
+      DYNALLOC_ALLOC_FLAG_NO_CONVERSION | DYNALLOC_ALLOC_FLAG_NO_MOUNT,
+      &daSysRC, &daSysRSN
+    );
+    if(daRC != RC_DYNALLOC_OK) {
+      printf("error: ds alloc dsn=\'%44.44s\', member=\'%8.8s\', dd=\'%8.8s\',"
+              " rc=%d sysRC=%d, sysRSN=0x%08X (update)\n",
+              daDsn.name, daMember.name, daDDname.name, daRC, daSysRC, daSysRSN);
+       respondWithJsonError(response, "Unable to lock dataset", 400, "Bad Request");
       return -1;
     }
+    jsonPrinter *out = respondWithJsonPrinter(response);
+    setResponseStatus(response, 200, "OK");
+    setDefaultJSONRESTHeaders(response);
+    writeHeader(response);
+    jsonStart(out);
+    jsonAddString(out, NULL, "locked dataset");
+    jsonEnd(out);
+    finishResponse(response);
+    return 1;
+  } else if(!strcmp(request->method, methodDELETE)) {
+    daRC = dynallocUnallocDatasetByDDName(&daDDname, DYNALLOC_UNALLOC_FLAG_NONE,
+                                          &daSysRC, &daSysRSN);
+    if (daRC != RC_DYNALLOC_OK) {
+      printf("error: ds unalloc dsn=\'%44.44s\', member=\'%8.8s\', dd=\'%8.8s\',"
+            " rc=%d sysRC=%d, sysRSN=0x%08X (read)\n",
+            daDsn.name, daMember.name, daDDname.name, daRC, daSysRC, daSysRSN);
+      respondWithJsonError(response, "Unable to unlock dataset", 400, "Bad Request");
+      return -1;
+    }
+    jsonPrinter *out = respondWithJsonPrinter(response);
+    setResponseStatus(response, 200, "OK");
+    setDefaultJSONRESTHeaders(response);
+    writeHeader(response);
+    jsonStart(out);
+    jsonAddString(out, NULL, "unlocked dataset");
+    jsonEnd(out);
+    finishResponse(response);
+    return 1;
   } else {
     jsonPrinter *out = respondWithJsonPrinter(response);
     setContentType(response, "text/json");
     setResponseStatus(response, 405, "Method Not Allowed");
     addStringHeader(response, "Server", "jdmfws");
     addStringHeader(response, "Transfer-Encoding", "chunked");
-    addStringHeader(response, "Allow", "GET");
+    addStringHeader(response, "Allow", "POST, DELETE");
     writeHeader(response);
     jsonStart(out);
-    jsonAddString(out, "405", "Method Not Allowed.  Only POST is permitted.");
+    jsonAddString(out, "405", "Method Not Allowed.");
     jsonEnd(out);
     finishResponse(response);
     return -1;
@@ -238,15 +281,15 @@ static int serveDatasetWritingService(HttpService *service, HttpResponse *respon
   return 0;
 }
 
-void installDatasetWritingService(HttpServer *server) {
+void installDatasetLockingService(HttpServer *server) {
   zowelog(NULL, LOG_COMP_ID_MVD_SERVER, ZOWE_LOG_INFO, "Installing dataset writing service\n");
   zowelog(NULL, LOG_COMP_ID_MVD_SERVER, ZOWE_LOG_DEBUG2, "begin %s\n", __FUNCTION__);
 
-  HttpService *httpService = makeGeneratedService("writeDataset", "/writeDataset/**");
+  HttpService *httpService = makeGeneratedService("writeDataset", "/lockDataset/**");
   httpService->authType = SERVICE_AUTH_NATIVE_WITH_SESSION_TOKEN;
   httpService->runInSubtask = TRUE;
   httpService->doImpersonation = TRUE;
-  httpService->serviceFunction = serveDatasetWritingService;
+  httpService->serviceFunction = serveDatasetLockingService;
   registerHttpService(server, httpService);
 }
 
