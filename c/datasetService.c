@@ -28,7 +28,6 @@
 #endif
 
 #include "zowetypes.h"
-#include "isgenq.h"
 #include "alloc.h"
 #include "bpxnet.h"
 #include "zos.h"
@@ -50,11 +49,6 @@
 
 #define IS_DAMEMBER_EMPTY($member) \
   (!memcmp(&($member), &(DynallocMemberName){"        "}, sizeof($member)))
-
-ENQToken tempLock;
-DynallocDatasetName daDsn = {0};
-DynallocMemberName daMember = {0};
-DynallocDDName daDDname = {.name = "????????"};
 
 static int serveDatasetMetadata(HttpService *service, HttpResponse *response) {
   zowelog(NULL, LOG_COMP_ID_MVD_SERVER, ZOWE_LOG_DEBUG2, "begin %s\n", __FUNCTION__);
@@ -197,43 +191,62 @@ static int serveVSAMDatasetContents(HttpService *service, HttpResponse *response
 static int serveDatasetLockingService(HttpService *service, HttpResponse *response) {
   HttpRequest *request = response->request;
   char *l1 = stringListPrint(request->parsedFile, 1, 1, "/", 0);
+  if(!strcmp(l1, "")) {
+    respondWithJsonError(response, "Malformed request URL, no dataset name or DDName provided", 400, "Bad Request");
+    return -1;
+  }
   char *percentDecoded = cleanURLParamValue(response->slh, l1);
   char *absPathTemp = stringConcatenate(response->slh, "//'", percentDecoded);
   char *absDsPath = stringConcatenate(response->slh, absPathTemp, "'");
   char *username = request->username;
-  printf("percent decoded datasetName: %s\n", percentDecoded);
-  if(!strcmp(percentDecoded, "")) {
-    respondWithJsonError(response, "Malformed request URL, no dataset name provided", 400, "Bad Request");
-    return -1;
-  } else if(!isDatasetPathValid(absDsPath)){
-    respondWithError(response,HTTP_STATUS_BAD_REQUEST,"Invalid dataset path");
-    return -1;
-  }
-  DatasetName dsnName;
-  DatasetMemberName memName;
-  extractDatasetAndMemberName(absDsPath, &dsnName, &memName);
-  nullTerminate(dsnName.value, sizeof(dsnName.value));
-  nullTerminate(memName.value, sizeof(memName.value));
-  printf("Extracted dsName: %s\nExtracted member: %s\n", dsnName.value, memName.value);
   int daRC = RC_DYNALLOC_OK, daSysRC = 0, daSysRSN = 0;
-  memset(daDsn.name, ' ', sizeof(daDsn.name));
-  memset(daMember.name, ' ', sizeof(daMember.name));
-  memcpy(daDsn.name, percentDecoded, strlen(percentDecoded));
-  memcpy(daMember.name, "", 0);
   if(!strcmp(request->method, methodPOST)) {
-     daRC = dynallocAllocDataset(
+    if(!isDatasetPathValid(absDsPath)){
+      respondWithError(response,HTTP_STATUS_BAD_REQUEST,"Invalid dataset path");
+      return -1;
+    }
+    DatasetName dsnName;
+    DatasetMemberName memName;
+    extractDatasetAndMemberName(absDsPath, &dsnName, &memName);
+    printf("strlen(memName.value): %d\n", strlen(memName.value));
+    nullTerminate(dsnName.value, sizeof(dsnName.value));
+    nullTerminate(memName.value, sizeof(memName.value));
+    printf("Extracted dsName: '%s'\nExtracted member: '%s'\n", dsnName.value, memName.value);
+    DynallocDatasetName daDsn = {0};
+    DynallocMemberName daMember = {0};
+    DynallocDDName daDDname = {.name = "????????"};
+    memset(daDsn.name, ' ', sizeof(daDsn.name));
+    memset(daMember.name, ' ', sizeof(daMember.name));
+    memcpy(daDsn.name, dsnName.value, strlen(dsnName.value));
+    memcpy(daMember.name, memName.value, strlen(memName.value));
+    printf("daDsn.name: '%s'\ndaMember.name: '%s'\n", daDsn.name, daMember.name);
+    printf("IS_DAMEMBER_EMPTY(daMember): %d\n", IS_DAMEMBER_EMPTY(daMember));
+    printf("daMember.name: '%.*s'\n", sizeof(daMember.name), daMember.name);
+    daRC = dynallocAllocDataset(
       &daDsn,
       IS_DAMEMBER_EMPTY(daMember) ? NULL : &daMember,
       &daDDname,
-      DYNALLOC_DISP_SHR,
+      DYNALLOC_DISP_OLD,
       DYNALLOC_ALLOC_FLAG_NO_CONVERSION | DYNALLOC_ALLOC_FLAG_NO_MOUNT,
       &daSysRC, &daSysRSN
     );
     if(daRC != RC_DYNALLOC_OK) {
       printf("error: ds alloc dsn=\'%44.44s\', member=\'%8.8s\', dd=\'%8.8s\',"
-              " rc=%d sysRC=%d, sysRSN=0x%08X (update)\n",
-              daDsn.name, daMember.name, daDDname.name, daRC, daSysRC, daSysRSN);
-       respondWithJsonError(response, "Unable to lock dataset", 400, "Bad Request");
+            " rc=%d sysRC=%d, sysRSN=0x%08X (update)\n",
+            daDsn.name, daMember.name, daDDname.name, daRC, daSysRC, daSysRSN);
+      //respondWithJsonError(response, "Unable to lock dataset", 400, "Bad request");
+      jsonPrinter *out = respondWithJsonPrinter(response);
+      setResponseStatus(response, 400, "Bad Request");
+      setDefaultJSONRESTHeaders(response);
+      writeHeader(response);
+      jsonStart(out);
+      jsonAddString(out, "error", "Unable to lock dataset");
+      jsonAddInt(out, "dynallocRC", daRC);
+      jsonAddInt(out, "dynallocSysRC", daSysRC);
+      jsonAddInt(out, "daSysRSN", daSysRSN);
+      jsonAddString(out, "datasetName", percentDecoded);
+      jsonEnd(out);
+      finishResponse(response);
       return -1;
     }
     jsonPrinter *out = respondWithJsonPrinter(response);
@@ -241,18 +254,35 @@ static int serveDatasetLockingService(HttpService *service, HttpResponse *respon
     setDefaultJSONRESTHeaders(response);
     writeHeader(response);
     jsonStart(out);
-    jsonAddString(out, NULL, "locked dataset");
+    jsonAddString(out, "message", "success");
+    jsonAddInt(out, "dynallocRC", daRC);
+    jsonAddString(out, "datasetName", percentDecoded);
+    jsonAddString(out, "DDName", daDDname.name);
     jsonEnd(out);
     finishResponse(response);
     return 1;
   } else if(!strcmp(request->method, methodDELETE)) {
-    daRC = dynallocUnallocDatasetByDDName(&daDDname, DYNALLOC_UNALLOC_FLAG_NONE,
+    DynallocDDName ddName = {0};
+    snprintf(ddName.name, sizeof(ddName.name) + 1, "%s", percentDecoded); //+1 because snprintf null terminates
+    daRC = dynallocUnallocDatasetByDDName(&ddName, DYNALLOC_UNALLOC_FLAG_NONE,
                                           &daSysRC, &daSysRSN);
     if (daRC != RC_DYNALLOC_OK) {
-      printf("error: ds unalloc dsn=\'%44.44s\', member=\'%8.8s\', dd=\'%8.8s\',"
+      printf("error: ds unalloc dd=\'%8.8s\',"
             " rc=%d sysRC=%d, sysRSN=0x%08X (read)\n",
-            daDsn.name, daMember.name, daDDname.name, daRC, daSysRC, daSysRSN);
+            ddName.name, daRC, daSysRC, daSysRSN);
       respondWithJsonError(response, "Unable to unlock dataset", 400, "Bad Request");
+      // jsonPrinter *out = respondWithJsonPrinter(response);
+      // setResponseStatus(response, 500, "Internal Server Error");
+      // setDefaultJSONRESTHeaders(response);
+      // writeHeader(response);
+      // jsonStart(out);
+      // jsonAddString(out, "error", "Unable to unlock dataset");
+      // jsonAddInt(out, "dynallocRC", daRC);
+      // jsonAddInt(out, "dynallocSysRC", daSysRC);
+      // jsonAddInt(out, "daSysRSN", daSysRSN);
+      // jsonAddString(out, "ddName", ddName.name);
+      // jsonEnd(out);
+      // finishResponse(response);
       return -1;
     }
     jsonPrinter *out = respondWithJsonPrinter(response);
@@ -260,7 +290,7 @@ static int serveDatasetLockingService(HttpService *service, HttpResponse *respon
     setDefaultJSONRESTHeaders(response);
     writeHeader(response);
     jsonStart(out);
-    jsonAddString(out, NULL, "unlocked dataset");
+    jsonAddString(out, "Unlocked dataset", percentDecoded);
     jsonEnd(out);
     finishResponse(response);
     return 1;
@@ -285,7 +315,7 @@ void installDatasetLockingService(HttpServer *server) {
   zowelog(NULL, LOG_COMP_ID_MVD_SERVER, ZOWE_LOG_INFO, "Installing dataset writing service\n");
   zowelog(NULL, LOG_COMP_ID_MVD_SERVER, ZOWE_LOG_DEBUG2, "begin %s\n", __FUNCTION__);
 
-  HttpService *httpService = makeGeneratedService("writeDataset", "/lockDataset/**");
+  HttpService *httpService = makeGeneratedService("lockDataset", "/lockDataset/**");
   httpService->authType = SERVICE_AUTH_NATIVE_WITH_SESSION_TOKEN;
   httpService->runInSubtask = TRUE;
   httpService->doImpersonation = TRUE;
