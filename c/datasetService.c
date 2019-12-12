@@ -208,20 +208,13 @@ static int serveDatasetLockingService(HttpService *service, HttpResponse *respon
     DatasetName dsnName;
     DatasetMemberName memName;
     extractDatasetAndMemberName(absDsPath, &dsnName, &memName);
-    printf("strlen(memName.value): %d\n", strlen(memName.value));
-    nullTerminate(dsnName.value, sizeof(dsnName.value));
-    nullTerminate(memName.value, sizeof(memName.value));
-    printf("Extracted dsName: '%s'\nExtracted member: '%s'\n", dsnName.value, memName.value);
     DynallocDatasetName daDsn = {0};
     DynallocMemberName daMember = {0};
     DynallocDDName daDDname = {.name = "????????"};
     memset(daDsn.name, ' ', sizeof(daDsn.name));
     memset(daMember.name, ' ', sizeof(daMember.name));
-    memcpy(daDsn.name, dsnName.value, strlen(dsnName.value));
-    memcpy(daMember.name, memName.value, strlen(memName.value));
-    printf("daDsn.name: '%s'\ndaMember.name: '%s'\n", daDsn.name, daMember.name);
-    printf("IS_DAMEMBER_EMPTY(daMember): %d\n", IS_DAMEMBER_EMPTY(daMember));
-    printf("daMember.name: '%.*s'\n", sizeof(daMember.name), daMember.name);
+    memcpy(daDsn.name, dsnName.value, sizeof(dsnName.value));
+    memcpy(daMember.name, memName.value, sizeof(memName.value));
     daRC = dynallocAllocDataset(
       &daDsn,
       IS_DAMEMBER_EMPTY(daMember) ? NULL : &daMember,
@@ -234,7 +227,6 @@ static int serveDatasetLockingService(HttpService *service, HttpResponse *respon
       printf("error: ds alloc dsn=\'%44.44s\', member=\'%8.8s\', dd=\'%8.8s\',"
             " rc=%d sysRC=%d, sysRSN=0x%08X (update)\n",
             daDsn.name, daMember.name, daDDname.name, daRC, daSysRC, daSysRSN);
-      //respondWithJsonError(response, "Unable to lock dataset", 400, "Bad request");
       jsonPrinter *out = respondWithJsonPrinter(response);
       setResponseStatus(response, 400, "Bad Request");
       setDefaultJSONRESTHeaders(response);
@@ -249,6 +241,9 @@ static int serveDatasetLockingService(HttpService *service, HttpResponse *respon
       finishResponse(response);
       return -1;
     }
+    char ddNameNullTerm[sizeof(daDDname.name) + 1] = {0};
+    memcpy(ddNameNullTerm, daDDname.name, sizeof(daDDname.name));
+    nullTerminate(ddNameNullTerm, sizeof(daDDname.name) + 1);
     jsonPrinter *out = respondWithJsonPrinter(response);
     setResponseStatus(response, 200, "OK");
     setDefaultJSONRESTHeaders(response);
@@ -257,7 +252,7 @@ static int serveDatasetLockingService(HttpService *service, HttpResponse *respon
     jsonAddString(out, "message", "success");
     jsonAddInt(out, "dynallocRC", daRC);
     jsonAddString(out, "datasetName", percentDecoded);
-    jsonAddString(out, "DDName", daDDname.name);
+    jsonAddString(out, "DDName", ddNameNullTerm);
     jsonEnd(out);
     finishResponse(response);
     return 1;
@@ -270,19 +265,18 @@ static int serveDatasetLockingService(HttpService *service, HttpResponse *respon
       printf("error: ds unalloc dd=\'%8.8s\',"
             " rc=%d sysRC=%d, sysRSN=0x%08X (read)\n",
             ddName.name, daRC, daSysRC, daSysRSN);
-      respondWithJsonError(response, "Unable to unlock dataset", 400, "Bad Request");
-      // jsonPrinter *out = respondWithJsonPrinter(response);
-      // setResponseStatus(response, 500, "Internal Server Error");
-      // setDefaultJSONRESTHeaders(response);
-      // writeHeader(response);
-      // jsonStart(out);
-      // jsonAddString(out, "error", "Unable to unlock dataset");
-      // jsonAddInt(out, "dynallocRC", daRC);
-      // jsonAddInt(out, "dynallocSysRC", daSysRC);
-      // jsonAddInt(out, "daSysRSN", daSysRSN);
-      // jsonAddString(out, "ddName", ddName.name);
-      // jsonEnd(out);
-      // finishResponse(response);
+      jsonPrinter *out = respondWithJsonPrinter(response);
+      setResponseStatus(response, 400, "Bad Request");
+      setDefaultJSONRESTHeaders(response);
+      writeHeader(response);
+      jsonStart(out);
+      jsonAddString(out, "error", "Unable to unlock dataset");
+      jsonAddInt(out, "dynallocRC", daRC);
+      jsonAddInt(out, "dynallocSysRC", daSysRC);
+      jsonAddInt(out, "daSysRSN", daSysRSN);
+      jsonAddString(out, "ddName", ddName.name);
+      jsonEnd(out);
+      finishResponse(response);
       return -1;
     }
     jsonPrinter *out = respondWithJsonPrinter(response);
